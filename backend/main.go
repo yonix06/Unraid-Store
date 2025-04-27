@@ -1,10 +1,13 @@
 package main
 
 import (
+	"encoding/json"
 	"flag"
+	"io"
 	"net"
 	"net/http"
 	"os"
+	"time"
 
 	"github.com/labstack/echo/v4"
 	"github.com/labstack/echo/v4/middleware"
@@ -45,6 +48,7 @@ func main() {
 	router.Listener = ln
 
 	router.GET("/hello", hello)
+	router.GET("/apps", getApps)
 
 	logger.Fatal(router.Start(startURL))
 }
@@ -59,4 +63,64 @@ func hello(ctx echo.Context) error {
 
 type HTTPMessageBody struct {
 	Message string
+}
+
+type AppSummary struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	Repository  string `json:"repository"`
+	Icon        string `json:"icon,omitempty"`
+}
+
+type appFeed struct {
+	Applist []struct {
+		Name       string `json:"Name"`
+		Overview   string `json:"Overview"`
+		Repository string `json:"Repository"`
+		Icon       string `json:"Icon"`
+	} `json:"applist"`
+}
+
+var (
+	appsCache      []AppSummary
+	appsCacheTime  time.Time
+	appsCacheTTL   = 10 * time.Minute
+)
+
+func getApps(c echo.Context) error {
+	if time.Since(appsCacheTime) > appsCacheTTL {
+		feed, err := fetchAppFeed()
+		if err != nil {
+			return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		}
+		var summaries []AppSummary
+		for _, app := range feed.Applist {
+			summaries = append(summaries, AppSummary{
+				Name:        app.Name,
+				Description: app.Overview,
+				Repository:  app.Repository,
+				Icon:        app.Icon,
+			})
+		}
+		appsCache = summaries
+		appsCacheTime = time.Now()
+	}
+	return c.JSON(http.StatusOK, appsCache)
+}
+
+func fetchAppFeed() (*appFeed, error) {
+	resp, err := http.Get("https://assets.ca.unraid.net/feed/applicationFeed.json")
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+	var feed appFeed
+	if err := json.Unmarshal(body, &feed); err != nil {
+		return nil, err
+	}
+	return &feed, nil
 }
